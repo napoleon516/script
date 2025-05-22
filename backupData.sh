@@ -2,7 +2,7 @@
 
 # 远程服务器配置
 REMOTE_USER="hamal"
-REMOTE_PASS="litianfeng"
+REMOTE_PASS="password"
 REMOTE_HOST="172.27.36.217"
 REMOTE_BASE_DIR="/data/logs"
 
