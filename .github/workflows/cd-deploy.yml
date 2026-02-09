@@ -1,0 +1,133 @@
+name: Tag 自动部署 & 版本回滚（CD）
+
+# 触发规则：1. 推送v*格式Tag自动部署；2. 手动触发回滚
+on:
+  push:
+    tags:
+      - 'v*' # 匹配 v1.0、v2.1.0 等 Tag 格式
+  workflow_dispatch:
+    inputs:
+      rollback_tag:
+        description: '要回滚的 Tag 名称（如 v1.0）'
+        required: false
+        type: string
+      action_type:
+        description: '操作类型：deploy（部署）/rollback（回滚）'
+        required: true
+        default: 'deploy'
+        type: choice
+        options:
+          - deploy
+          - rollback
+
+jobs:
+  # 自动部署任务（Tag推送触发）
+  deploy:
+    runs-on: ubuntu-latest
+    # 仅在Tag推送/手动选择deploy时执行
+    if: github.event.inputs.action_type == 'deploy' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/'))
+    steps:
+      - name: 拉取仓库指定 Tag 代码
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }} # 拉取触发部署的 Tag 代码
+          fetch-depth: 0 # 拉取所有历史，确保Tag完整
+
+      - name: 配置 SSH 免密连接机器 B
+        uses: webfactory/ssh-agent@v0.8.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: 部署前备份机器 B 当前版本
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          DEPLOY_DIR: ${{ secrets.DEPLOY_DIR }}
+          BACKUP_DIR: ${{ secrets.BACKUP_DIR }}
+          TAG_NAME: ${{ github.ref_name }} # 当前 Tag 名称（如 v1.0）
+        run: |
+          # 1. 连接机器 B，创建备份/部署目录（确保存在）
+          ssh -o StrictHostKeyChecking=no $SSH_USER@$SSH_HOST "mkdir -p $BACKUP_DIR $DEPLOY_DIR"
+          # 2. 备份当前部署目录（命名格式：时间戳_Tag名，便于回滚）
+          ssh -o StrictHostKeyChecking=no $SSH_USER@$SSH_HOST "if [ -d $DEPLOY_DIR ]; then cp -r $DEPLOY_DIR $BACKUP_DIR/$(date +%Y%m%d_%H%M%S)_$TAG_NAME; fi"
+          echo "✅ 机器 B 当前版本已备份至：$BACKUP_DIR/$(date +%Y%m%d_%H%M%S)_$TAG_NAME"
+
+      - name: 将 Tag 代码传输到机器 B 部署目录
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          DEPLOY_DIR: ${{ secrets.DEPLOY_DIR }}
+        run: |
+          # 传输代码（覆盖部署目录，排除.git等无关文件）
+          scp -o StrictHostKeyChecking=no -r \
+            --exclude=".git" \
+            --exclude=".github" \
+            --exclude="node_modules" \
+            ./* $SSH_USER@$SSH_HOST:$DEPLOY_DIR/
+          echo "✅ Tag 代码已成功传输到机器 B：$DEPLOY_DIR"
+
+      - name: 可选：执行机器 B 部署后脚本（如启动服务）
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          DEPLOY_DIR: ${{ secrets.DEPLOY_DIR }}
+        run: |
+          # 示例：进入部署目录，安装依赖、重启服务（根据你的业务修改）
+          ssh -o StrictHostKeyChecking=no $SSH_USER@$SSH_HOST "
+            cd $DEPLOY_DIR &&
+            # pip install -r requirements.txt || true &&
+            # systemctl restart your_service || true
+            echo '部署后脚本执行完成'
+          "
+
+  # 回滚任务（手动触发）
+  rollback:
+    runs-on: ubuntu-latest
+    # 仅在手动选择rollback且指定了回滚Tag时执行
+    if: github.event.inputs.action_type == 'rollback' && github.event.inputs.rollback_tag != ''
+    steps:
+      - name: 配置 SSH 免密连接机器 B
+        uses: webfactory/ssh-agent@v0.8.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: 回滚到指定 Tag 版本
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          DEPLOY_DIR: ${{ secrets.DEPLOY_DIR }}
+          BACKUP_DIR: ${{ secrets.BACKUP_DIR }}
+          ROLLBACK_TAG: ${{ github.event.inputs.rollback_tag }}
+        run: |
+          # 步骤1：查找该 Tag 对应的最新备份
+          BACKUP_PATH=$(ssh -o StrictHostKeyChecking=no $SSH_USER@$SSH_HOST "ls $BACKUP_DIR | grep $ROLLBACK_TAG | sort -r | head -1")
+          
+          if [ -n "$BACKUP_PATH" ]; then
+            # 方式1：优先从备份恢复（速度快，无网络依赖）
+            ssh -o StrictHostKeyChecking=no $SSH_USER@$SSH_HOST "
+              rm -rf $DEPLOY_DIR/* &&
+              cp -r $BACKUP_DIR/$BACKUP_PATH/* $DEPLOY_DIR/ &&
+              echo '✅ 从备份恢复成功：$BACKUP_DIR/$BACKUP_PATH'
+            "
+          else
+            # 方式2：无备份时，直接拉取仓库指定 Tag 代码（需机器 B 安装git）
+            echo "⚠️ 未找到 $ROLLBACK_TAG 备份，直接拉取代码回滚"
+            ssh -o StrictHostKeyChecking=no $SSH_USER@$SSH_HOST "
+              cd $DEPLOY_DIR &&
+              git reset --hard $ROLLBACK_TAG &&
+              git pull origin $ROLLBACK_TAG &&
+              echo '✅ 直接拉取 Tag 代码回滚成功：$ROLLBACK_TAG'
+            "
+          fi
+
+      - name: 可选：回滚后重启服务
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          DEPLOY_DIR: ${{ secrets.DEPLOY_DIR }}
+        run: |
+          ssh -o StrictHostKeyChecking=no $SSH_USER@$SSH_HOST "
+            cd $DEPLOY_DIR &&
+            # systemctl restart your_service || true
+            echo '回滚后服务重启完成'
+          "
