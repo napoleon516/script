@@ -49,7 +49,7 @@ jobs:
           # 1. 连接机器 B，创建备份/部署目录（确保存在）
           ssh -o StrictHostKeyChecking=no $SSH_USER@$SSH_HOST "mkdir -p $BACKUP_DIR $DEPLOY_DIR"
           # 2. 生成带时间戳的备份目录名（避免重复）
-          BACKUP_NAME=$(date +%Y%m%d_%H%M%S)_$TAG_NAME
+          BACKUP_NAME=$(date +%Y%m%d_%H%M%S)_before_$TAG_NAME
           # 3. 备份当前部署目录（先检查部署目录是否有内容，避免空备份）
           ssh -o StrictHostKeyChecking=no $SSH_USER@$SSH_HOST "
             # if [ -d $DEPLOY_DIR ] && [ $(ls -A $DEPLOY_DIR | wc -l) -gt 0 ]; then
