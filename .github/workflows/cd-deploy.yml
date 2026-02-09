@@ -48,9 +48,18 @@ jobs:
         run: |
           # 1. 连接机器 B，创建备份/部署目录（确保存在）
           ssh -o StrictHostKeyChecking=no $SSH_USER@$SSH_HOST "mkdir -p $BACKUP_DIR $DEPLOY_DIR"
-          # 2. 备份当前部署目录（命名格式：时间戳_Tag名，便于回滚）
-          ssh -o StrictHostKeyChecking=no $SSH_USER@$SSH_HOST "if [ -d $DEPLOY_DIR ]; then cp -r $DEPLOY_DIR $BACKUP_DIR/$(date +%Y%m%d_%H%M%S)_$TAG_NAME; fi"
-          echo "✅ 机器 B 当前版本已备份至：$BACKUP_DIR/$(date +%Y%m%d_%H%M%S)_$TAG_NAME"
+          # 2. 生成带时间戳的备份目录名（避免重复）
+          BACKUP_NAME=$(date +%Y%m%d_%H%M%S)_$TAG_NAME
+          # 3. 备份当前部署目录（先检查部署目录是否有内容，避免空备份）
+          ssh -o StrictHostKeyChecking=no $SSH_USER@$SSH_HOST "
+            if [ -d $DEPLOY_DIR ] && [ $(ls -A $DEPLOY_DIR | wc -l) -gt 0 ]; then
+              cp -r $DEPLOY_DIR $BACKUP_DIR/$BACKUP_NAME &&
+              echo '✅ 备份成功：$BACKUP_DIR/$BACKUP_NAME'
+            else
+              echo '⚠️ 部署目录为空，跳过备份'
+            fi
+          "
+          echo "📝 备份记录：$BACKUP_DIR/$BACKUP_NAME"
 
       - name: 将 Tag 代码传输到机器 B 部署目录
         env:
@@ -58,13 +67,6 @@ jobs:
           SSH_USER: ${{ secrets.SSH_USER }}
           DEPLOY_DIR: ${{ secrets.DEPLOY_DIR }}
         run: |
-          # 传输代码（覆盖部署目录，排除.git等无关文件）
-          # scp -o StrictHostKeyChecking=no -r \
-          #   --exclude=".git" \
-          #   --exclude=".github" \
-          #   --exclude="node_modules" \
-          #   ./* $SSH_USER@$SSH_HOST:$DEPLOY_DIR/
-          # echo "✅ Tag 代码已成功传输到机器 B：$DEPLOY_DIR"
           # 用rsync传输代码（排除指定文件，覆盖部署目录）
           rsync -avz \
             --exclude=".git" \
@@ -99,7 +101,7 @@ jobs:
         with:
           ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
 
-      - name: 回滚到指定 Tag 版本
+      - name: 回滚到指定 Tag 版本（增强版）
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
           SSH_USER: ${{ secrets.SSH_USER }}
@@ -107,23 +109,52 @@ jobs:
           BACKUP_DIR: ${{ secrets.BACKUP_DIR }}
           ROLLBACK_TAG: ${{ github.event.inputs.rollback_tag }}
         run: |
-          # 步骤1：查找该 Tag 对应的最新备份
-          BACKUP_PATH=$(ssh -o StrictHostKeyChecking=no $SSH_USER@$SSH_HOST "ls $BACKUP_DIR | grep $ROLLBACK_TAG | sort -r | head -1")
-          
+          # 步骤1：先检查备份根目录是否存在
+          ssh -o StrictHostKeyChecking=no $SSH_USER@$SSH_HOST "
+            if [ ! -d $BACKUP_DIR ]; then
+              echo '❌ 备份根目录不存在：$BACKUP_DIR'
+              exit 1
+            fi
+          "
+
+          # 步骤2：查找该 Tag 对应的最新备份（精准匹配，避免杂项干扰）
+          BACKUP_PATH=$(ssh -o StrictHostKeyChecking=no $SSH_USER@$SSH_HOST "
+            ls $BACKUP_DIR | grep -E '_$ROLLBACK_TAG$' | sort -r | head -1
+          ")
+
           if [ -n "$BACKUP_PATH" ]; then
-            # 方式1：优先从备份恢复（速度快，无网络依赖）
+            # 方式1：从备份恢复（先检查备份目录是否有内容）
+            echo "🔍 找到最新备份：$BACKUP_DIR/$BACKUP_PATH"
             ssh -o StrictHostKeyChecking=no $SSH_USER@$SSH_HOST "
-              rm -rf $DEPLOY_DIR/* &&
+              # 检查备份目录是否有内容
+              if [ $(ls -A $BACKUP_DIR/$BACKUP_PATH | wc -l) -eq 0 ]; then
+                echo '❌ 备份目录为空，无法恢复'
+                exit 1
+              fi
+              # 清空部署目录（避免残留文件）
+              rm -rf $DEPLOY_DIR/*
+              # 复制备份文件到部署目录
               cp -r $BACKUP_DIR/$BACKUP_PATH/* $DEPLOY_DIR/ &&
-              echo '✅ 从备份恢复成功：$BACKUP_DIR/$BACKUP_PATH'
+              echo '✅ 从备份恢复成功：$ROLLBACK_TAG'
             "
           else
-            # 方式2：无备份时，直接拉取仓库指定 Tag 代码（需机器 B 安装git）
-            echo "⚠️ 未找到 $ROLLBACK_TAG 备份，直接拉取代码回滚"
+            # 方式2：无备份时，拉取仓库指定 Tag 代码（增强容错）
+            echo "⚠️ 未找到 $ROLLBACK_TAG 备份，尝试直接从仓库拉取"
             ssh -o StrictHostKeyChecking=no $SSH_USER@$SSH_HOST "
+              # 检查机器B是否安装git
+              if ! command -v git &> /dev/null; then
+                echo '❌ 机器B未安装git，无法拉取代码'
+                exit 1
+              fi
+              # 进入部署目录，初始化git（若未初始化）
               cd $DEPLOY_DIR &&
+              if [ ! -d .git ]; then
+                git init &&
+                git remote add origin https://github.com/napoleon516/script.git
+              fi
+              # 拉取指定Tag代码
+              git fetch origin tag $ROLLBACK_TAG &&
               git reset --hard $ROLLBACK_TAG &&
-              git pull origin $ROLLBACK_TAG &&
               echo '✅ 直接拉取 Tag 代码回滚成功：$ROLLBACK_TAG'
             "
           fi
