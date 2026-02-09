@@ -54,6 +54,8 @@ jobs:
           ssh -o StrictHostKeyChecking=no $SSH_USER@$SSH_HOST "
             if [ -d $DEPLOY_DIR ] && [ $(ls -A $DEPLOY_DIR | wc -l) -gt 0 ]; then
               cp -r $DEPLOY_DIR $BACKUP_DIR/$BACKUP_NAME &&
+              echo ' $BACKUP_DIR'
+              echo ' $BACKUP_NAME'
               echo '✅ 备份成功：$BACKUP_DIR/$BACKUP_NAME'
             else
               echo '⚠️ 部署目录为空，跳过备份'
