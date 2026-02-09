@@ -59,11 +59,19 @@ jobs:
           DEPLOY_DIR: ${{ secrets.DEPLOY_DIR }}
         run: |
           # 传输代码（覆盖部署目录，排除.git等无关文件）
-          scp -o StrictHostKeyChecking=no -r \
+          # scp -o StrictHostKeyChecking=no -r \
+          #   --exclude=".git" \
+          #   --exclude=".github" \
+          #   --exclude="node_modules" \
+          #   ./* $SSH_USER@$SSH_HOST:$DEPLOY_DIR/
+          # echo "✅ Tag 代码已成功传输到机器 B：$DEPLOY_DIR"
+          # 用rsync传输代码（排除指定文件，覆盖部署目录）
+          rsync -avz \
             --exclude=".git" \
             --exclude=".github" \
             --exclude="node_modules" \
-            ./* $SSH_USER@$SSH_HOST:$DEPLOY_DIR/
+            -e "ssh -o StrictHostKeyChecking=no" \
+            ./ $SSH_USER@$SSH_HOST:$DEPLOY_DIR/
           echo "✅ Tag 代码已成功传输到机器 B：$DEPLOY_DIR"
 
       - name: 可选：执行机器 B 部署后脚本（如启动服务）
