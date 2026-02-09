@@ -52,6 +52,7 @@ jobs:
           BACKUP_NAME=$(date +%Y%m%d_%H%M%S)_$TAG_NAME
           # 3. 备份当前部署目录（先检查部署目录是否有内容，避免空备份）
           ssh -o StrictHostKeyChecking=no $SSH_USER@$SSH_HOST "
+            echo ' $BACKUP_DIR'
             if [ -d $DEPLOY_DIR ] && [ $(ls -A $DEPLOY_DIR | wc -l) -gt 0 ]; then
               cp -r $DEPLOY_DIR $BACKUP_DIR/$BACKUP_NAME &&
               echo ' $BACKUP_DIR'
