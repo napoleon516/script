@@ -147,6 +147,11 @@ jobs:
                 echo '❌ 机器B未安装git，无法拉取代码'
                 exit 1
               fi
+              # 新增：Git 网络配置优化
+              git config --global http.version HTTP/1.1  # 禁用 HTTP2，改用 HTTP1.1
+              git config --global http.postBuffer 524288000  # 增大缓冲区（500MB）
+              git config --global core.compression 0  # 关闭压缩，减少网络传输错误
+
               # 进入部署目录，初始化git（若未初始化）
               cd $DEPLOY_DIR &&
               if [ ! -d .git ]; then
